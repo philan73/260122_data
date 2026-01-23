@@ -4,17 +4,19 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import glob
+import os
 
-# 1. GeoJSON 로드 (자치구 경계 및 중심 좌표용)
+# 페이지 설정
+st.set_page_config(page_title="서울시 학업중단율 분석", layout="wide")
+
+# 1. GeoJSON 데이터 로드 (서울시 자치구 경계)
 @st.cache_data
 def get_seoul_geojson():
     url = "https://raw.githubusercontent.com/southkorea/seoul-maps/master/juso/2015/json/seoul_municipalities_geo_simple.json"
     return requests.get(url).json()
 
-# 2. 자치구별 중심 좌표 (이름 표시용)
-@st.cache_data
+# 2. 자치구별 중심 좌표 (지도 위에 글자를 쓰기 위한 좌표)
 def get_district_centers():
-    # 주요 자치구 위경도 좌표 (이름을 지도에 박기 위함)
     centers = {
         '종로구': [37.5730, 126.9794], '중구': [37.5641, 126.9979], '용산구': [37.5326, 126.9904],
         '성동구': [37.5633, 127.0371], '광진구': [37.5385, 127.0822], '동대문구': [37.5744, 127.0400],
@@ -28,39 +30,51 @@ def get_district_centers():
     }
     return pd.DataFrame([{'name': k, 'lat': v[0], 'lon': v[1]} for k, v in centers.items()])
 
-# [데이터 로드 부분은 이전과 동일하므로 생략하거나 기존 로직 유지]
-# ... (load_data 함수 생략) ...
+# 3. 데이터 로드 함수
+def load_data(uploaded_files):
+    all_data = []
+    # 기본 파일 찾기
+    base_files = glob.glob("학업중단율_*.csv")
+    file_sources = [('local', f) for f in base_files]
+    if uploaded_files:
+        for f in uploaded_files:
+            file_sources.append(('uploaded', f))
 
-# --- 지도 시각화 부분 수정 ---
-def draw_map(map_df, target_col, school_level, selected_year):
-    seoul_geo = get_seoul_geojson()
-    centers_df = get_district_centers()
-    
-    # 1. 배경 경계 및 색상 (Choropleth)
-    fig = px.choropleth_mapbox(
-        map_df, geojson=seoul_geo, locations='자치구별(2)', featureidkey="properties.name",
-        color=target_col, color_continuous_scale="Reds", opacity=0.6,
-        mapbox_style="carto-positron", zoom=10, center={"lat": 37.565, "lon": 126.985}
-    )
+    for source_type, file in file_sources:
+        try:
+            if source_type == 'local':
+                year = os.path.basename(file).split('_')[1].split('.')[0]
+                df = pd.read_csv(file, encoding='utf-8')
+            else:
+                year = file.name.split('_')[1].split('.')[0]
+                df = pd.read_csv(file, encoding='utf-8')
+            
+            df_cleaned = df.iloc[3:].copy()
+            df_cleaned.columns = [
+                '자치구별(1)', '자치구별(2)', 
+                '초등_학생수', '초등_중단자수', '초등_중단율',
+                '중등_학생수', '중등_중단자수', '중등_중단율',
+                '고등_학생수', '고등_중단자수', '고등_중단율'
+            ]
+            df_cleaned['연도'] = year
+            for col in df_cleaned.columns[2:-1]:
+                df_cleaned[col] = pd.to_numeric(df_cleaned[col], errors='coerce')
+            
+            # 전체 평균 중단율 계산
+            df_cleaned['전체_중단율'] = (
+                (df_cleaned['초등_중단자수'].fillna(0) + df_cleaned['중등_중단자수'].fillna(0) + df_cleaned['고등_중단자수'].fillna(0)) /
+                (df_cleaned['초등_학생수'].fillna(1) + df_cleaned['중등_학생수'].fillna(1) + df_cleaned['고등_학생수'].fillna(1)) * 100
+            )
+            all_data.append(df_cleaned)
+        except: continue
+    return pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
 
-    # 2. 지도 위에 이름 쓰기 (Scatter Mapbox 레이어 추가)
-    fig.add_trace(go.Scattermapbox(
-        lat=centers_df['lat'],
-        lon=centers_df['lon'],
-        mode='text',
-        text=centers_df['name'],
-        textfont={'size': 12, 'color': 'black'},
-        showlegend=False,
-        hoverinfo='skip'
-    ))
+# 메인 로직
+st.sidebar.header("설정")
+uploaded_files = st.sidebar.file_uploader("추가 CSV 업로드", accept_multiple_files=True)
+df = load_data(uploaded_files)
 
-    fig.update_layout(margin={"r":0,"t":50,"l":0,"b":0}, title=f"<b>{selected_year}년 {school_level} 학업중단율</b>")
-    st.plotly_chart(fig, use_container_width=True)
+if not df.empty:
+    st.title("📍 서울시 자치구별 학업중단율 지도 분석")
 
-# 하단 가이드 텍스트 (문제가 되었던 부분 수정)
-st.markdown(f"""
-### 🎨 지도 색상 가이드 ({school_level} 기준)
-- **짙은 빨간색**: 중단율이 상대적으로 **높음**
-- **연한 노란색/흰색**: 중단율이 상대적으로 **낮음**
-- **글자**: 각 자치구의 위치와 이름을 나타냅니다.
-""")
+    c1, c2
