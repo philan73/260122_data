@@ -1,144 +1,111 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
+import json
 import requests
-import re
+import glob
 
-# 1. 페이지 설정 및 디자인 스타일
-st.set_page_config(page_title="서울시 학업중단율 분석 포털", layout="wide")
+# 페이지 설정
+st.set_page_config(page_title="서울시 학업중단율 지도 대시보드", layout="wide")
 
-# CSS 스타일 적용 (오류 수정: unsafe_allow_html=True)
-st.markdown("""
-    <style>
-    .main { background-color: #f8f9fa; }
-    div[data-testid="stMetric"] {
-        background-color: #ffffff;
-        padding: 20px;
-        border-radius: 12px;
-        border: 1px solid #e0e0e0;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
-    h1 { color: #1e3a8a; }
-    </style>
-    """, unsafe_allow_html=True)
-
+# --- 데이터 및 지도 데이터 로드 ---
 @st.cache_data
-def load_and_merge_data(uploaded_files):
+def get_seoul_geojson():
+    # 서울시 자치구 경계 데이터 (GeoJSON)
+    url = "https://raw.githubusercontent.com/southkorea/seoul-maps/master/juso/2015/json/seoul_municipalities_geo_simple.json"
+    return requests.get(url).json()
+
+def load_data(uploaded_files):
     all_data = []
-    if not uploaded_files: return pd.DataFrame()
-    for file in uploaded_files:
+    base_files = glob.glob("학업중단율_*.csv")
+    file_sources = [('local', f) for f in base_files]
+    if uploaded_files:
+        for f in uploaded_files:
+            file_sources.append(('uploaded', f))
+
+    for source_type, file in file_sources:
         try:
-            df_raw = pd.read_csv(file, header=None)
-            first_row_text = " ".join(df_raw.iloc[0].astype(str))
-            year_match = re.search(r'(\d{4})', first_row_text)
-            year = year_match.group(1) if year_match else "Unknown"
-            data = df_raw.iloc[3:].copy()
-            data.columns = ['자치구별1', '자치구', '초_학생', '초_중단자', '초_중단율', 
-                            '중_학생', '중_중단자', '중_중단율', '고_학생', '고_중단자', '고_중단율']
-            for col in data.columns[2:]:
-                data[col] = pd.to_numeric(data[col], errors='coerce')
-            data['연도'] = year
-            data['전체_중단율'] = data[['초_중단율', '중_중단율', '고_중단율']].mean(axis=1)
-            all_data.append(data)
-        except: continue
+            if source_type == 'local':
+                year = file.split('_')[1].split('.')[0]
+                df = pd.read_csv(file, encoding='utf-8')
+            else:
+                year = file.name.split('_')[1].split('.')[0]
+                df = pd.read_csv(file, encoding='utf-8')
+            
+            df_cleaned = df.iloc[3:].copy()
+            df_cleaned.columns = [
+                '자치구별(1)', '자치구별(2)', 
+                '초등_학생수', '초등_중단자수', '초등_중단율',
+                '중등_학생수', '중등_중단자수', '중등_중단율',
+                '고등_학생수', '고등_중단자수', '고등_중단율'
+            ]
+            df_cleaned['연도'] = year
+            # 숫자 형변환 및 전체 평균 중단율 계산
+            for col in df_cleaned.columns[2:-1]:
+                df_cleaned[col] = pd.to_numeric(df_cleaned[col], errors='coerce')
+            
+            df_cleaned['전체_중단율'] = (df_cleaned['초등_중단자수'] + df_cleaned['중등_중단자수'] + df_cleaned['고등_중단자수']) / \
+                                     (df_cleaned['초등_학생수'] + df_cleaned['중등_학생수'] + df_cleaned['고등_학생수']) * 100
+            all_data.append(df_cleaned)
+        except:
+            continue
     return pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
 
-@st.cache_data
-def get_map_resources():
-    geo_url = 'https://raw.githubusercontent.com/southkorea/seoul-maps/master/kostat/2013/json/seoul_municipalities_geo_simple.json'
-    geo_data = requests.get(geo_url).json()
-    rows = []
-    for feature in geo_data['features']:
-        name = feature['properties']['name']
-        geom = feature['geometry']
-        coords = geom['coordinates'][0]
-        if geom['type'] == 'MultiPolygon':
-            coords = max(geom['coordinates'], key=lambda x: len(x[0]))[0]
-        lon = sum(p[0] for p in coords) / len(coords)
-        lat = sum(p[1] for p in coords) / len(coords)
-        rows.append({'자치구': name, 'lat': lat, 'lon': lon})
-    return geo_data, pd.DataFrame(rows)
+# 데이터 준비
+uploaded_files = st.sidebar.file_uploader("추가 CSV 업로드", accept_multiple_files=True)
+df = load_data(uploaded_files)
+seoul_geo = get_seoul_geojson()
 
-# --- 실행부 ---
-st.title("📊 서울시 학업중단율 분석 포털")
-st.caption("2014년 - 2024년 시계열 통합 데이터 기반 상대적 위치 분석")
+if not df.empty:
+    st.title("🗺️ 서울시 자치구별 학업중단율 지도")
 
-uploaded_files = st.sidebar.file_uploader("📂 연도별 CSV 파일 다중 선택", type="csv", accept_multiple_files=True)
-full_df = load_and_merge_data(uploaded_files)
+    # 상단 컨트롤러
+    c1, c2 = st.columns(2)
+    with c1:
+        selected_year = st.selectbox("연도 선택", sorted(df['연도'].unique(), reverse=True))
+    with c2:
+        # '전체' 옵션 추가
+        school_level = st.radio("학교급 선택", ["전체", "초등", "중등", "고등"], horizontal=True)
 
-if full_df.empty:
-    st.info("👈 왼쪽 사이드바에서 분석할 연도별 CSV 파일들을 모두 선택해 주세요.")
-    st.stop()
-
-geo_json, center_df = get_map_resources()
-available_years = sorted([y for y in full_df['연도'].unique() if y.isdigit()], reverse=True)
-
-# --- 필터 ---
-st.write("### 🔍 분석 조건 설정")
-c1, c2 = st.columns(2)
-with c1:
-    selected_year = st.selectbox("📅 분석 연도 선택", available_years)
-with c2:
-    option = st.selectbox("🏫 학교급 선택", ["전체 평균", "초등학교", "중학교", "고등학교"])
-
-mapping = {"전체 평균": "전체_중단율", "초등학교": "초_중단율", "중학교": "중_중단율", "고등학교": "고_중단율"}
-target_col = mapping[option]
-
-# 데이터 계산
-df_year = full_df[(full_df['연도'] == selected_year) & (full_df['자치구'] != '소계')].copy()
-mean_val = df_year[target_col].mean()
-std_val = df_year[target_col].std()
-df_year['Z_score'] = (df_year[target_col] - mean_val) / std_val if std_val > 0 else 0
-
-# --- 핵심 지표 카드 ---
-st.write("---")
-m1, m2, m3 = st.columns(3)
-m1.metric("분석 연도", f"{selected_year}년")
-m2.metric(f"{option} 평균 중단율", f"{mean_val:.2f}%")
-m3.metric("구별 편차(표준편차)", f"{std_val:.2f}")
-st.write("---")
-
-# --- 대시보드 ---
-tab1, tab2 = st.tabs(["📈 시계열 추이 확인", "🗺️ 자치구별 위치 분석"])
-
-with tab1:
-    st.subheader(f"서울시 전체 연도별 {option} 중단율 흐름")
-    trend_data = full_df[full_df['자치구'] == '소계'].sort_values('연도')
-    fig_line = px.line(trend_data, x='연도', y=target_col, markers=True, 
-                       color_discrete_sequence=['#2563eb'], template="plotly_white")
-    st.plotly_chart(fig_line, use_container_width=True)
-
-with tab2:
-    st.subheader(f"{selected_year}년 자치구별 상대적 위치 (Z-score)")
-    fig_map = px.choropleth_mapbox(
-        df_year, geojson=geo_json, locations='자치구', featureidkey='properties.name',
-        color='Z_score', range_color=[-2, 2], color_continuous_scale="RdBu_r",
-        mapbox_style="carto-positron", zoom=10, 
-        center={"lat": 37.5633, "lon": 126.9796}, opacity=0.7,
-        hover_data={'자치구': True, target_col: ':.2f', 'Z_score': ':.2f'}
+    # 데이터 필터링 (소계 제외)
+    map_df = df[(df['연도'] == selected_year) & (df['자치구별(2)'] != '소계')].copy()
+    
+    # 표시할 컬럼 결정
+    target_col = '전체_중단율' if school_level == "전체" else f"{school_level}_중단율"
+    
+    # --- 지도 생성 ---
+    fig = px.choropleth_mapbox(
+        map_df,
+        geojson=seoul_geo,
+        locations='자치구별(2)',
+        featureidkey="properties.name",
+        color=target_col,
+        color_continuous_scale="YlOrRd", # 노랑->빨강 색상표
+        range_color=(0, map_df[target_col].max()),
+        mapbox_style="carto-positron",
+        zoom=10,
+        center={"lat": 37.5665, "lon": 126.9780},
+        opacity=0.7,
+        labels={target_col: '중단율(%)'},
+        hover_data={'자치구별(2)': True, target_col: ':.2f'}
     )
     
-    center_with_data = pd.merge(center_df, df_year, on='자치구')
-    fig_map.add_trace(go.Scattermapbox(
-        lat=center_with_data['lat'], lon=center_with_data['lon'],
-        mode='text', text=center_with_data['자치구'],
-        textfont={'size': 12, 'weight': 'bold', 'color': '#1e293b'}, hoverinfo='skip'
-    ))
-    fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=600)
-    st.plotly_chart(fig_map, use_container_width=True)
+    # 지도 위에 자치구 이름 표시 (Text layer 추가)
+    # 실제 구현시 텍스트 레이어는 scatter_mapbox를 겹쳐서 사용함
+    
+    fig.update_layout(margin={"r":0,"t":40,"l":0,"b":0}, title=f"{selected_year}년 {school_level} 학업중단율 분포")
+    st.plotly_chart(fig, use_container_width=True)
 
-# --- 하단 안내 ---
-st.write("---")
-with st.expander("📌 분석 결과 및 기호 안내", expanded=True):
-    col_info1, col_info2 = st.columns([1, 2])
-    with col_info1:
-        st.error("🔴 **위험 (Z > 1.0)**")
-        st.write("평균보다 유의미하게 중단율이 높은 지역")
-        st.info("🔵 **안정 (Z < -1.0)**")
-        st.write("평균보다 유의미하게 중단율이 낮은 지역")
-    with col_info2:
-        st.markdown(f"""
-        **Z-Score(표준점수)란?** 단순 수치가 아닌, 서울시 평균과 해당 지역의 차이를 '표준편차' 단위로 나타낸 것입니다.  
-        현재 선택된 **{selected_year}년 {option}**의 평균은 **{mean_val:.2f}%**입니다. 이 수치보다 훨씬 높은 곳은 빨간색, 낮은 곳은 파란색으로 표시됩니다.
-        """)
+    # --- 색상 설명 ---
+    st.info(f"""
+    **💡 지도 색상 의미 안내:**
+    * **진한 빨간색**: 해당 지역의 {school_level} 학업중단율이 상대적으로 **매우 높음**을 의미합니다.
+    * **연한 노란색**: 해당 지역의 {school_level} 학업중단율이 상대적으로 **낮음**을 의미합니다.
+    * **회색**: 데이터가 존재하지 않는 지역입니다.
+    * *현재 화면의 중단율 범위: {map_df[target_col].min():.2f}% ~ {map_df[target_col].max():.2f}%*
+    """)
+
+    st.divider()
+    # 하단 데이터 표
+    st.subheader("상세 데이터 표")
+    st.dataframe(map_df[['자치구별(2)', '초등_중단율', '중등_중단율', '고등_중단율', '전체_중단율']], use_container_width=True)
