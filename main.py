@@ -37,7 +37,7 @@ def get_geojson():
     url = "https://raw.githubusercontent.com/southkorea/seoul-maps/master/kostat/2013/json/seoul_municipalities_geo_simple.json"
     return requests.get(url).json()
 
-# 자치구별 중심 좌표
+# 자치구별 중심 좌표 (지도 라벨 및 버블용)
 DISTRICT_COORDS = {
     '종로구': [37.58, 126.98], '중구': [37.56, 126.99], '용산구': [37.53, 126.98], '성동구': [37.55, 127.04], 
     '광진구': [37.54, 127.08], '동대문구': [37.58, 127.05], '중랑구': [37.59, 127.09], '성북구': [37.60, 127.02], 
@@ -65,7 +65,7 @@ with st.sidebar:
 df = load_data(uploaded)
 
 if df is not None:
-    # 데이터 가공
+    # 3. 데이터 가공
     if type_key == "전체":
         df['학생수'] = df[['초등_학생', '중등_학생', '고등_학생']].sum(axis=1)
         df['중단자수'] = df[['초등_중단', '중등_중단', '고등_중단']].sum(axis=1)
@@ -94,7 +94,7 @@ if df is not None:
     st.header(f"🗺️ 자치구별 {level_label} 학업중단율 분석")
     st.markdown(f"**색상의 진하기**는 중단율(비중)을, **붉은 원의 크기**는 실제 중단자 수(규모)를 나타내어 복합적인 위기 징후를 진단합니다.")
     
-    # 💡 분석 연도 선택 방식을 selectbox로 변경
+    # 연도 선택기 (selectbox로 변경)
     years = sorted(df['연도'].unique(), reverse=True)
     sel_year = st.selectbox("📅 분석 연도를 선택하세요", options=years, index=0)
     
@@ -110,4 +110,22 @@ if df is not None:
             mapbox_style="carto-positron", zoom=9.3, center={"lat": 37.5665, "lon": 126.9780},
             opacity=0.5, labels={'학업중단율': '중단율(%)'}
         )
-        l
+        lats, lons, names, sizes = [], [], [], []
+        for name, coords in DISTRICT_COORDS.items():
+            row = map_df[map_df['자치구'] == name].iloc[0]
+            lats.append(coords[0]); lons.append(coords[1]); names.append(name)
+            sizes.append(row['중단자수'])
+        
+        fig_map.add_trace(go.Scattermapbox(
+            lat=lats, lon=lons, mode='markers+text',
+            marker=go.scattermapbox.Marker(size=[s/max(sizes + [1])*40 for s in sizes], color='red', opacity=0.35),
+            text=names, textfont=dict(size=10, color="black"), hoverinfo='none'
+        ))
+        fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=550)
+        st.plotly_chart(fig_map, use_container_width=True)
+
+        st.info("""
+        **🔍 지도 해석 가이드**
+        * **색상(진한 파란색):** 학생 대비 학업 중단 비중이 높은 지역입니다. (0~2.5% 고정 기준)
+        * **붉은 원(크기):** 실제 학업을 중단한 **학생 수**의 규모를 나타냅니다. 
+        * **진단 기준:** 서울 평균의 1.5배 초과 시
