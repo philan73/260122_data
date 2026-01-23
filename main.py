@@ -5,10 +5,10 @@ import plotly.graph_objects as go
 import requests
 import glob
 
-# 1. 페이지 설정
+# 페이지 설정
 st.set_page_config(layout="wide", page_title="서울시 학업중단 알리미", page_icon="🏫")
 
-# 2. 데이터 로드 및 전처리 함수
+# 1. 데이터 로드 및 전처리
 @st.cache_data
 def load_data(uploaded_files):
     all_dfs = []
@@ -19,13 +19,8 @@ def load_data(uploaded_files):
             fname = f.name if hasattr(f, 'name') else f
             year_val = fname.split('_')[1].split('.')[0]
             df_raw = pd.read_csv(f, skiprows=3, header=None)
-            # 자치구(1), 초등(2,3,4), 중등(5,6,7), 고등(8,9,10)
             df_refined = df_raw[[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]].copy()
-            df_refined.columns = [
-                '자치구', '초등_학생', '초등_중단', '초등_율', 
-                '중등_학생', '중등_중단', '중등_율', 
-                '고등_학생', '고등_중단', '고등_율'
-            ]
+            df_refined.columns = ['자치구', '초등_학생', '초등_중단', '초등_율', '중등_학생', '중등_중단', '중등_율', '고등_학생', '고등_중단', '고등_율']
             for col in df_refined.columns[1:]:
                 df_refined[col] = pd.to_numeric(df_refined[col], errors='coerce')
             df_refined['연도'] = int(year_val)
@@ -38,7 +33,7 @@ def get_geojson():
     url = "https://raw.githubusercontent.com/southkorea/seoul-maps/master/kostat/2013/json/seoul_municipalities_geo_simple.json"
     return requests.get(url).json()
 
-# 자치구별 중심 좌표 (지도 라벨 및 버블용)
+# 자치구 좌표 데이터
 DISTRICT_COORDS = {
     '종로구': [37.58, 126.98], '중구': [37.56, 126.99], '용산구': [37.53, 126.98], '성동구': [37.55, 127.04], 
     '광진구': [37.54, 127.08], '동대문구': [37.58, 127.05], '중랑구': [37.59, 127.09], '성북구': [37.60, 127.02], 
@@ -52,21 +47,21 @@ DISTRICT_COORDS = {
 t_col1, t_col2 = st.columns([1, 1])
 with t_col2:
     st.title("🏫 서울시 학업중단 알리미")
-    st.markdown("> **위기 징후 모니터링 시스템**: 서울시 평균을 기준으로 지역별 교육 위기 수준을 진단합니다.")
+    st.markdown("> **데이터 기반 위기 모니터링**: 서울시 평균을 기준으로 자치구별 위험 징후를 진단합니다.")
 
-# --- 사이드바: 설정 ---
+# --- 사이드바 ---
 with st.sidebar:
-    st.subheader("🎯 분석 타겟")
+    st.subheader("🎯 분석 설정")
     level_dict = {"👶 초등학교": "초등", "👦 중학교": "중등", "🧑 고등학교": "고등", "📊 전체 평균": "전체"}
     sel_level_raw = st.radio("학교급 선택", list(level_dict.keys()), index=3)
     type_key = level_dict[sel_level_raw]
     level_label = sel_level_raw.split(" ")[1]
-    uploaded = st.file_uploader("CSV 데이터 추가", accept_multiple_files=True)
+    uploaded = st.file_uploader("CSV 추가 업로드", accept_multiple_files=True)
 
 df = load_data(uploaded)
 
 if df is not None:
-    # 3. 데이터 가공 (선택 학교급 기준)
+    # 2. 데이터 가공 및 위기 기준 설정
     if type_key == "전체":
         df['학생수'] = df[['초등_학생', '중등_학생', '고등_학생']].sum(axis=1)
         df['중단자수'] = df[['초등_중단', '중등_중단', '고등_중단']].sum(axis=1)
@@ -76,40 +71,37 @@ if df is not None:
         df['중단자수'] = df[f'{type_key}_중단']
         df['학업중단율'] = df[f'{type_key}_율'].round(2)
 
-    # 서울시 장기 평균 및 임계치 계산
     avg_val = df[df['자치구'] == '소계']['학업중단율'].mean()
     danger_threshold = avg_val * 1.5
 
-    # 4. 연도별 추이 그래프
+    # 3. 연도별 추이
     st.header(f"📈 서울시 {level_label} 중단율 추이")
     trend_df = df[df['자치구'] == '소계'].sort_values('연도')
     fig_line = px.line(trend_df, x='연도', y='학업중단율', markers=True, text='학업중단율')
     fig_line.add_hline(y=avg_val, line_dash="dash", line_color="orange", annotation_text="서울시 장기 평균")
-    fig_line.update_traces(textposition="top center", line_color="#0083B0")
     st.plotly_chart(fig_line, use_container_width=True)
 
     st.divider()
 
-    # 5. 지도 및 상세 리포트
-    st.header(f"🗺️ {level_label} 지역별 위기 분석")
+    # 4. 지도 및 상세 분석
+    st.header(f"🗺️ {level_label} 지역별 위기 징후 분석")
     years = sorted(df['연도'].unique())
     sel_year = st.select_slider("📅 분석 연도 선택", options=years, value=max(years))
     
     map_df = df[(df['연도'] == sel_year) & (df['자치구'] != '소계')].copy()
-    # 학술적 진단 로직 적용
     map_df['상태'] = map_df['학업중단율'].apply(lambda x: "🔴 위기" if x >= danger_threshold else ("🟡 주의" if x >= avg_val else "🟢 안정"))
 
     c_map, c_info = st.columns([1.5, 1])
     with c_map:
         geo = get_geojson()
-        # 배경 지도 (중단율 비중)
+        # 배경 지도 (중단율)
         fig_map = px.choropleth_mapbox(
             map_df, geojson=geo, locations='자치구', featureidkey="properties.name",
             color='학업중단율', color_continuous_scale="GnBu", range_color=[0, 2.5],
             mapbox_style="carto-positron", zoom=9.3, center={"lat": 37.5665, "lon": 126.9780},
-            opacity=0.5, labels={'학업중단율': '중단율(%)'}
+            opacity=0.5
         )
-        # 버블 & 라벨 레이어 (중단자 수 규모 & 구 명칭)
+        # 버블 레이어 (중단자 수)
         lats, lons, names, sizes = [], [], [], []
         for name, coords in DISTRICT_COORDS.items():
             row = map_df[map_df['자치구'] == name].iloc[0]
@@ -124,23 +116,37 @@ if df is not None:
         fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=550)
         st.plotly_chart(fig_map, use_container_width=True)
 
-        # 지도 하단 보완 설명
+        # --- 💡 지도 하단 보완 설명 (요청 사항) ---
         st.info("""
-        **🔍 지도 해석 가이드**
-        * **색상(진한 파란색):** 학생 대비 학업 중단 비중이 높은 지역입니다. (0~2.5% 고정 기준)
-        * **붉은 원(크기):** 실제 학업을 중단한 **학생 수**의 규모를 나타냅니다. 
-        * **진단 기준:** 서울 평균의 1.5배 초과 시 **🔴위기**, 평균 초과 시 **🟡주의**로 분류합니다.
+        **🔍 지도 읽는 법**
+        * **색상(파란색):** 진할수록 학생 대비 중단 비중이 높은 지역입니다. (0~2.5% 고정 기준)
+        * **붉은 원:** 크기가 클수록 실제로 학업을 중단한 **학생 수**가 많음을 의미합니다.
+        * **진단 기준:** 서울시 평균보다 1.5배 높으면 **🔴위기**, 평균을 상회하면 **🟡주의**로 분류합니다.
         """)
 
     with c_info:
-        st.markdown(f"#### 🔎 {sel_year}년 {level_label} 상세 리포트")
+        st.markdown(f"#### 🔎 {sel_year}년 상세 리포트")
         selected_dist = st.selectbox("자치구 상세 조회", ["전체 요약"] + sorted(map_df['자치구'].tolist()))
         
         if selected_dist != "전체 요약":
             d = map_df[map_df['자치구'] == selected_dist].iloc[0]
-            st.markdown(f"**진단 결과: {d['상태']}**")
-            
-            m1, m2 = st.columns(2)
-            m1.metric("전체 학생 수", f"{int(d['학생수']):,}명")
-            m1.metric("학업 중단자 수", f"{int(d['중단자수']):,}명")
-            m2.metric("학업 중단율", f"{d['학업중단율
+            st.metric("진단 상태", d['상태'])
+            m_col1, m_col2 = st.columns(2)
+            m_col1.metric("중단율", f"{d['학업중단율']}%")
+            m_col2.metric("중단자 수", f"{int(d['중단자수']):,}명")
+            st.progress(min(d['학업중단율']/2.5, 1.0))
+        else:
+            st.success("지도를 클릭하거나 목록에서 자치구를 선택하여 상세 진단 결과를 확인하세요.")
+
+        st.divider()
+        st.write(f"**📋 {level_label} 상태 목록**")
+        st.dataframe(map_df[['자치구', '학업중단율', '상태']].sort_values('학업중단율', ascending=False).reset_index(drop=True), use_container_width=True, height=280)
+
+    st.divider()
+    # 5. 히트맵 (타임라인)
+    st.header("🌡️ 자치구별 학업중단율 타임라인")
+    pivot_df = df[df['자치구'] != '소계'].pivot(index='자치구', columns='연도', values='학업중단율').sort_index(ascending=False)
+    st.plotly_chart(px.imshow(pivot_df, color_continuous_scale="GnBu", aspect="auto"), use_container_width=True)
+
+else:
+    st.info("데이터를 업로드해 주세요.")
