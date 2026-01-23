@@ -121,4 +121,30 @@ if df is not None:
             # 가로로 Metric 배치하여 균형 맞춤
             m1, m2, m3 = st.columns(3)
             m1.metric("학생수", f"{int(d_info['학생수']):,}명")
-            m2.metric("중단자
+            m2.metric("중단자", f"{int(d_info['중단자수']):,}명")
+            m3.metric("중단율", f"{d_info['학업중단율']}%")
+            st.divider()
+            st.write(f"**📋 {sel_year}년 {level_label} 중단율 순번**")
+        else:
+            st.markdown(f"#### 📋 {sel_year}년 {level_label} 중단율 현황")
+            st.write("지도를 확인하거나 구를 선택해 상세 지표를 확인하세요.")
+
+        # 데이터 프레임 높이와 지도 높이의 균형을 맞춤
+        rank_df = map_df[['자치구', '학업중단율']].sort_values('학업중단율', ascending=False).reset_index(drop=True)
+        rank_df.index += 1
+        st.dataframe(rank_df, use_container_width=True, height=400, column_config={
+            "학업중단율": st.column_config.NumberColumn(f"{level_label} 중단율(%)", format="%.2f")
+        })
+
+    st.divider()
+
+    # --- 5. 하단 히트맵 ---
+    st.header(f"🌡️ {level_label} 중단율 타임라인 히트맵")
+    st.warning(f"💡 색상이 짙을수록 해당 시기에 **{level_label}** 중단율이 상대적으로 높았음을 의미합니다.")
+    heatmap_data = df[df['자치구'] != '소계']
+    pivot_df = heatmap_data.pivot(index='자치구', columns='연도', values='학업중단율').sort_index(ascending=False)
+    fig_heat = px.imshow(pivot_df, color_continuous_scale="GnBu", aspect="auto")
+    st.plotly_chart(fig_heat, use_container_width=True)
+
+else:
+    st.info("데이터를 읽어오는 중입니다. 잠시만 기다려주세요.")
