@@ -19,6 +19,7 @@ def load_data(uploaded_files):
             fname = f.name if hasattr(f, 'name') else f
             year_val = fname.split('_')[1].split('.')[0]
             df_raw = pd.read_csv(f, skiprows=3, header=None)
+            # 자치구(1), 초등(2,3,4), 중등(5,6,7), 고등(8,9,10)
             df_refined = df_raw[[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]].copy()
             df_refined.columns = [
                 '자치구', '초등_학생', '초등_중단', '초등_율', 
@@ -65,7 +66,7 @@ with st.sidebar:
 df = load_data(uploaded)
 
 if df is not None:
-    # 3. 데이터 가공
+    # 데이터 가공
     if type_key == "전체":
         df['학생수'] = df[['초등_학생', '중등_학생', '고등_학생']].sum(axis=1)
         df['중단자수'] = df[['초등_중단', '중등_중단', '고등_중단']].sum(axis=1)
@@ -75,6 +76,7 @@ if df is not None:
         df['중단자수'] = df[f'{type_key}_중단']
         df['학업중단율'] = df[f'{type_key}_율'].round(2)
 
+    # 기준값 계산
     avg_val = df[df['자치구'] == '소계']['학업중단율'].mean()
     danger_threshold = avg_val * 1.5
 
@@ -92,11 +94,10 @@ if df is not None:
 
     # --- 섹션 2: 자치구별 학업중단율 분석 ---
     st.header(f"🗺️ 자치구별 {level_label} 학업중단율 분석")
-    st.markdown(f"**색상의 진하기**는 중단율(비중)을, **붉은 원의 크기**는 실제 중단자 수(규모)를 나타내어 복합적인 위기 징후를 진단합니다.")
+    st.markdown(f"선택한 연도의 자치구별 현황입니다. **색상의 진하기**는 중단율(비중)을, **붉은 원의 크기**는 실제 중단자 수(규모)를 나타내어 복합적인 위기 징후를 진단합니다.")
     
-    # 연도 선택기 (selectbox로 변경)
-    years = sorted(df['연도'].unique(), reverse=True)
-    sel_year = st.selectbox("📅 분석 연도를 선택하세요", options=years, index=0)
+    years = sorted(df['연도'].unique())
+    sel_year = st.select_slider("📅 분석 연도 선택", options=years, value=max(years))
     
     map_df = df[(df['연도'] == sel_year) & (df['자치구'] != '소계')].copy()
     map_df['상태'] = map_df['학업중단율'].apply(lambda x: "🔴 위기" if x >= danger_threshold else ("🟡 주의" if x >= avg_val else "🟢 안정"))
@@ -118,7 +119,7 @@ if df is not None:
         
         fig_map.add_trace(go.Scattermapbox(
             lat=lats, lon=lons, mode='markers+text',
-            marker=go.scattermapbox.Marker(size=[s/max(sizes + [1])*40 for s in sizes], color='red', opacity=0.35),
+            marker=go.scattermapbox.Marker(size=[s/max(sizes)*40 for s in sizes], color='red', opacity=0.35),
             text=names, textfont=dict(size=10, color="black"), hoverinfo='none'
         ))
         fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=550)
@@ -128,4 +129,51 @@ if df is not None:
         **🔍 지도 해석 가이드**
         * **색상(진한 파란색):** 학생 대비 학업 중단 비중이 높은 지역입니다. (0~2.5% 고정 기준)
         * **붉은 원(크기):** 실제 학업을 중단한 **학생 수**의 규모를 나타냅니다. 
-        * **진단 기준:** 서울 평균의 1.5배 초과 시
+        * **진단 기준:** 서울 평균의 1.5배 초과 시 **🔴위기**, 평균 초과 시 **🟡주의**로 분류합니다.
+        """)
+
+    with c_info:
+        st.markdown(f"#### 🔎 {sel_year}년 상세 리포트")
+        selected_dist = st.selectbox("자치구 상세 조회", ["전체 요약"] + sorted(map_df['자치구'].tolist()))
+        
+        if selected_dist != "전체 요약":
+            d = map_df[map_df['자치구'] == selected_dist].iloc[0]
+            st.markdown(f"**진단 결과: {d['상태']}**")
+            m1, m2 = st.columns(2)
+            m1.metric("전체 학생 수", f"{int(d['학생수']):,}명")
+            m1.metric("학업 중단자 수", f"{int(d['중단자수']):,}명")
+            m2.metric("학업 중단율", f"{d['학업중단율']}%")
+            st.write("위기 임계치 대비 현황")
+            st.progress(min(d['학업중단율']/2.5, 1.0))
+        else:
+            total_info = df[(df['연도'] == sel_year) & (df['자치구'] == '소계')].iloc[0]
+            st.success(f"**서울시 {level_label} 전체 평균**")
+            m1, m2 = st.columns(2)
+            m1.metric("서울 전체 학생", f"{int(total_info['학생수']):,}명")
+            m1.metric("서울 전체 중단자", f"{int(total_info['중단자수']):,}명")
+            m2.metric("평균 중단율", f"{total_info['학업중단율']}%")
+
+        st.divider()
+        st.write(f"**📋 {level_label} 자치구별 현황 목록**")
+        disp_df = map_df[['자치구', '학생수', '중단자수', '학업중단율', '상태']].sort_values('학업중단율', ascending=False).reset_index(drop=True)
+        st.dataframe(disp_df, use_container_width=True, height=250)
+
+    st.divider()
+
+    # --- 섹션 3: 자치구별 중단율 타임라인 ---
+    st.header(f"🌡️ 자치구별 {level_label} 중단율 타임라인")
+    st.markdown("모든 자치구의 역대 기록을 한눈에 비교합니다. 특정 지역의 수치가 개선되고 있는지, 혹은 특정 시기에 서울 전체의 위기가 발생했는지 시계열적으로 분석합니다.")
+    
+    heatmap_data = df[df['자치구'] != '소계']
+    pivot_df = heatmap_data.pivot(index='자치구', columns='연도', values='학업중단율').sort_index(ascending=False)
+    st.plotly_chart(px.imshow(pivot_df, color_continuous_scale="GnBu", aspect="auto"), use_container_width=True)
+
+    with st.expander("💡 히트맵 해석 방법 (분석 가이드)"):
+        st.markdown("""
+        * **가로 방향 분석:** 특정 구의 색상이 시간이 흐를수록(오른쪽으로 갈수록) 옅어지는지 확인하세요. 이는 학업중단 예방 활동의 성과를 보여줍니다.
+        * **세로 방향 분석:** 특정 연도에 서울시 전체가 유독 진한 색을 띄는지 확인하세요. 이는 사회적 환경이나 정책 변화의 영향을 의미합니다.
+        * **데이터 의미:** 색상이 짙은 구역은 해당 시기에 집중적인 상담이나 대안 교육 지원이 필요했던 '위기 구간'을 뜻합니다.
+        """)
+
+else:
+    st.info("CSV 데이터를 업로드하여 분석을 시작하세요.")
