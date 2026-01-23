@@ -33,75 +33,65 @@ def get_geojson():
     url = "https://raw.githubusercontent.com/southkorea/seoul-maps/master/kostat/2013/json/seoul_municipalities_geo_simple.json"
     return requests.get(url).json()
 
-# --- 메인 화면 시작 ---
-st.title("🏫 서울시 학업중단 알리미")
-
+# --- 사이드바: 설명 및 설정 ---
 with st.sidebar:
-    st.header("⚙️ 분석 설정")
-    uploaded = st.file_uploader("CSV 추가 업로드", accept_multiple_files=True)
-    level = st.selectbox("학교급 선택", ["전체 평균", "초등학교", "중학교", "고등학교"], index=0)
+    st.title("🏫 서울시 학업중단 알리미")
+    st.markdown("""
+    **본 사이트는 서울시 교육청 데이터를 기반으로 자치구별 학업중단 현황을 분석합니다.**
+    
+    * **추이 분석:** 10년 이상의 흐름 파악
+    * **지역 비교:** 자치구별 격차 시각화
+    * **심층 탐색:** 학교급별 맞춤형 데이터
+    
+    ---
+    """)
+    
+    st.subheader("🎯 분석 타겟 설정")
+    # 아이콘을 포함한 학교급 선택
+    level_map = {
+        "👶 초등학교": "초등학교",
+        "👦 중학교": "중학교",
+        "🧑 고등학교": "고등학교",
+        "📊 전체 평균": "전체 평균"
+    }
+    level_display = st.radio("학교급을 선택하세요", list(level_map.keys()), index=3)
+    level = level_map[level_display]
+    
+    st.divider()
+    uploaded = st.file_uploader("추가 데이터 업로드 (CSV)", accept_multiple_files=True)
 
+# --- 메인 화면 시작 ---
 df = load_data(uploaded)
 
 if df is not None:
     # 데이터 처리
     if level == "전체 평균":
-        df['target'] = df[['초등학교', '중학교', '고등학교']].mean(axis=1)
+        df['학업중단율'] = df[['초등학교', '중학교', '고등학교']].mean(axis=1).round(2)
     else:
-        df['target'] = df[level]
+        df['학업중단율'] = df[level].round(2)
 
-    # --- 1. 상단: 연도별 학업중단 추이 ---
-    st.subheader(f"📈 연도별 학업중단 추이 ({level})")
+    # 1. 상단: 추이 그래프
+    st.header("📈 연도별 학업중단 추이")
     trend_df = df[df['자치구'].str.contains('소계', na=False)].sort_values('연도')
-    fig_line = px.line(trend_df, x='연도', y='target', markers=True, 
-                      line_shape='spline', color_discrete_sequence=['#2E7D32']) # 차분한 녹색 톤
-    fig_line.update_layout(hovermode="x unified", plot_bgcolor='rgba(0,0,0,0)')
+    
+    # 간략 해석 자동 생성
+    latest_rate = trend_df['학업중단율'].iloc[-1]
+    avg_rate = trend_df['학업중단율'].mean()
+    status_msg = "상승" if latest_rate > avg_rate else "하강"
+    st.caption(f"💡 서울시 전체 평균은 {latest_rate}%로, 지난 10년 평균 대비 점진적 {status_msg} 추세에 있습니다.")
+    
+    fig_line = px.line(trend_df, x='연도', y='학업중단율', markers=True, 
+                      line_shape='spline', color_discrete_sequence=['#0083B0'], text='학업중단율')
+    fig_line.update_traces(textposition="top center")
     st.plotly_chart(fig_line, use_container_width=True)
 
     st.divider()
 
-    # --- 2. 중단: 지역별 상세 분포 (지도) ---
-    st.subheader("🗺️ 지역별 상세 분포")
+    # 2. 중단: 지역별 분포 (지도)
+    st.header("🗺️ 지역별 상세 분포")
     years = sorted(df['연도'].unique())
-    selected_year = st.select_slider("확인할 연도를 선택하세요", options=years, value=max(years))
+    selected_year = st.select_slider("데이터 기준 연도", options=years, value=max(years))
     
-    map_df = df[(df['연도'] == selected_year) & (~df['자치구'].str.contains('소계', na=False))]
+    map_df = df[(df['연도'] == selected_year) & (~df['자치구'].str.contains('소계', na=False))].copy()
     
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        geo = get_geojson()
-        fig_map = px.choropleth_mapbox(
-            map_df, geojson=geo, locations='자치구', featureidkey="properties.name",
-            color='target', color_continuous_scale="YlGnBu", # 차분한 청록색 톤
-            mapbox_style="carto-positron", zoom=9.5, 
-            center={"lat": 37.5665, "lon": 126.9780},
-            opacity=0.7, labels={'target': '중단율(%)'}
-        )
-        fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
-        st.plotly_chart(fig_map, use_container_width=True)
-    
-    with col2:
-        st.write(f"**{selected_year}년 {level} 순위**")
-        st.dataframe(map_df[['자치구', 'target']].sort_values('target', ascending=False), hide_index=True, use_container_width=True)
-
-    st.divider()
-
-    # --- 3. 하단: 자치구별 히트맵 타임라인 ---
-    st.subheader("🌡️ 자치구별 학업중단율 히트맵 타임라인")
-    st.markdown("과거부터 현재까지 각 자치구의 변화를 한눈에 비교합니다.")
-    
-    heatmap_data = df[~df['자치구'].str.contains('소계', na=False)]
-    pivot_df = heatmap_data.pivot(index='자치구', columns='연도', values='target').sort_index(ascending=False)
-
-    fig_heat = px.imshow(
-        pivot_df,
-        labels=dict(x="연도", y="자치구", color="중단율(%)"),
-        x=pivot_df.columns, y=pivot_df.index,
-        color_continuous_scale="GnBu", # Green-Blue 톤으로 눈을 편안하게
-        aspect="auto"
-    )
-    fig_heat.update_xaxes(side="top")
-    st.plotly_chart(fig_heat, use_container_width=True)
-
-else:
-    st.info("데이터를 업로드하거나 파일 경로를 확인해주세요.")
+    #
