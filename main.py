@@ -8,13 +8,20 @@ import re
 # 1. 페이지 설정 및 디자인 스타일
 st.set_page_config(page_title="서울시 학업중단율 분석 포털", layout="wide")
 
+# CSS 스타일 적용 (오류 수정: unsafe_allow_html=True)
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
-    .stMetric { background-color: #ffffff; padding: 20px; border-radius: 12px; border: 1px solid #e0e0e0; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    div[data-testid="stMetric"] {
+        background-color: #ffffff;
+        padding: 20px;
+        border-radius: 12px;
+        border: 1px solid #e0e0e0;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
     h1 { color: #1e3a8a; }
     </style>
-    """, unsafe_allow_stdio=True)
+    """, unsafe_allow_html=True)
 
 @st.cache_data
 def load_and_merge_data(uploaded_files):
@@ -53,7 +60,7 @@ def get_map_resources():
         rows.append({'자치구': name, 'lat': lat, 'lon': lon})
     return geo_data, pd.DataFrame(rows)
 
-# --- 상단 타이틀 ---
+# --- 실행부 ---
 st.title("📊 서울시 학업중단율 분석 포털")
 st.caption("2014년 - 2024년 시계열 통합 데이터 기반 상대적 위치 분석")
 
@@ -67,7 +74,7 @@ if full_df.empty:
 geo_json, center_df = get_map_resources()
 available_years = sorted([y for y in full_df['연도'].unique() if y.isdigit()], reverse=True)
 
-# --- 필터 설정 ---
+# --- 필터 ---
 st.write("### 🔍 분석 조건 설정")
 c1, c2 = st.columns(2)
 with c1:
@@ -78,7 +85,7 @@ with c2:
 mapping = {"전체 평균": "전체_중단율", "초등학교": "초_중단율", "중학교": "중_중단율", "고등학교": "고_중단율"}
 target_col = mapping[option]
 
-# 데이터 필터링 및 통계 계산
+# 데이터 계산
 df_year = full_df[(full_df['연도'] == selected_year) & (full_df['자치구'] != '소계')].copy()
 mean_val = df_year[target_col].mean()
 std_val = df_year[target_col].std()
@@ -92,7 +99,7 @@ m2.metric(f"{option} 평균 중단율", f"{mean_val:.2f}%")
 m3.metric("구별 편차(표준편차)", f"{std_val:.2f}")
 st.write("---")
 
-# --- 메인 분석 대시보드 ---
+# --- 대시보드 ---
 tab1, tab2 = st.tabs(["📈 시계열 추이 확인", "🗺️ 자치구별 위치 분석"])
 
 with tab1:
@@ -100,7 +107,6 @@ with tab1:
     trend_data = full_df[full_df['자치구'] == '소계'].sort_values('연도')
     fig_line = px.line(trend_data, x='연도', y=target_col, markers=True, 
                        color_discrete_sequence=['#2563eb'], template="plotly_white")
-    fig_line.update_layout(yaxis_title="중단율 (%)", hovermode="x unified")
     st.plotly_chart(fig_line, use_container_width=True)
 
 with tab2:
@@ -113,5 +119,26 @@ with tab2:
         hover_data={'자치구': True, target_col: ':.2f', 'Z_score': ':.2f'}
     )
     
-    # 자치구 이름 표시 레이어 (오류 발생 지점 수정 완료)
-    center
+    center_with_data = pd.merge(center_df, df_year, on='자치구')
+    fig_map.add_trace(go.Scattermapbox(
+        lat=center_with_data['lat'], lon=center_with_data['lon'],
+        mode='text', text=center_with_data['자치구'],
+        textfont={'size': 12, 'weight': 'bold', 'color': '#1e293b'}, hoverinfo='skip'
+    ))
+    fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=600)
+    st.plotly_chart(fig_map, use_container_width=True)
+
+# --- 하단 안내 ---
+st.write("---")
+with st.expander("📌 분석 결과 및 기호 안내", expanded=True):
+    col_info1, col_info2 = st.columns([1, 2])
+    with col_info1:
+        st.error("🔴 **위험 (Z > 1.0)**")
+        st.write("평균보다 유의미하게 중단율이 높은 지역")
+        st.info("🔵 **안정 (Z < -1.0)**")
+        st.write("평균보다 유의미하게 중단율이 낮은 지역")
+    with col_info2:
+        st.markdown(f"""
+        **Z-Score(표준점수)란?** 단순 수치가 아닌, 서울시 평균과 해당 지역의 차이를 '표준편차' 단위로 나타낸 것입니다.  
+        현재 선택된 **{selected_year}년 {option}**의 평균은 **{mean_val:.2f}%**입니다. 이 수치보다 훨씬 높은 곳은 빨간색, 낮은 곳은 파란색으로 표시됩니다.
+        """)
