@@ -70,11 +70,31 @@ if df is not None:
     avg_val = df[df['자치구'] == '소계']['학업중단율'].mean()
     danger_threshold = avg_val * 1.5
 
-    # 섹션 1: 추이
+    # --- 섹션 1: 학업중단율 추이 (가독성 개선 부분) ---
     st.header(f"📈 {level_label} 학업중단율 추이")
-    trend_df = df[df['자치구'] == '소계'].sort_values('연도')
-    fig_line = px.line(trend_df, x='연도', y='학업중단율', markers=True, text='학업중단율')
-    fig_line.add_hline(y=avg_val, line_dash="dash", line_color="orange", annotation_text="서울시 장기 평균")
+    trend_df = df[df['자치구'] == '소계'].sort_values('연도').copy()
+    trend_df['표시율'] = trend_df['학업중단율'].apply(lambda x: f"{x:.2f}%") # 숫자 뒤 % 붙이기
+
+    fig_line = px.line(trend_df, x='연도', y='학업중단율', markers=True, 
+                       text='표시율') # 텍스트로 표시율 사용
+    
+    # 텍스트 스타일 및 위치 조정
+    fig_line.update_traces(
+        textposition="top center", 
+        textfont=dict(size=14, color="black", family="Arial Black"),
+        line_color="#0083B0",
+        marker=dict(size=10)
+    )
+    
+    # Y축 여백 확보 및 장기 평균선 추가
+    fig_line.update_layout(
+        yaxis=dict(range=[trend_df['학업중단율'].min() * 0.8, trend_df['학업중단율'].max() * 1.2]),
+        margin=dict(t=50)
+    )
+    fig_line.add_hline(y=avg_val, line_dash="dash", line_color="orange", 
+                       annotation_text=f"서울시 장기 평균 ({avg_val:.2f}%)", 
+                       annotation_position="bottom right")
+    
     st.plotly_chart(fig_line, use_container_width=True)
 
     st.divider()
@@ -87,16 +107,15 @@ if df is not None:
     map_df = df[(df['연도'] == sel_year) & (df['자치구'] != '소계')].copy()
     map_df['상태'] = map_df['학업중단율'].apply(lambda x: "🔴 위기" if x >= danger_threshold else ("🟡 주의" if x >= avg_val else "🟢 안정"))
 
-    # --- ✨ NEW: 위기 지역 요약 섹션 ---
+    # 위기 지역 요약
     danger_zones = map_df[map_df['상태'] == "🔴 위기"].sort_values('학업중단율', ascending=False).head(3)
     if not danger_zones.empty:
-        st.subheader(f"🚨 {sel_year}년 집중 관리 권고 지역 (Top {len(danger_zones)})")
+        st.subheader(f"🚨 {sel_year}년 집중 관리 권고 지역")
         cols = st.columns(len(danger_zones))
         for i, (idx, row) in enumerate(danger_zones.iterrows()):
-            cols[i].warning(f"**{row['자치구']}**\n\n중단율: {row['학업중단율']}% (평균의 {round(row['학업중단율']/avg_val, 1)}배)")
+            cols[i].warning(f"**{row['자치구']}**\n\n중단율: {row['학업중단율']}%")
     else:
-        st.success(f"✅ {sel_year}년에는 '위기' 단계에 해당하는 자치구가 없습니다.")
-    st.write("") # 간격 조절
+        st.success(f"✅ {sel_year}년에는 '위기' 단계의 자치구가 없습니다.")
 
     c_map, c_info = st.columns([1.5, 1])
     with c_map:
@@ -121,8 +140,6 @@ if df is not None:
         fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=550)
         st.plotly_chart(fig_map, use_container_width=True)
 
-        st.info("**🔍 지도 해석 가이드**\n* **색상:** 중단 비중(0~2.5% 고정) / **붉은 원:** 실제 중단 학생 수\n* **기준:** 평균의 1.5배 초과 시 **🔴위기**, 평균 초과 시 **🟡주의**")
-
     with c_info:
         st.markdown(f"#### 🔎 {sel_year}년 상세 리포트")
         selected_dist = st.selectbox("자치구 상세 조회", ["전체 요약"] + sorted(map_df['자치구'].tolist()))
@@ -132,7 +149,6 @@ if df is not None:
             m1, m2 = st.columns(2)
             m1.metric("전체 학생 수", f"{int(d['학생수']):,}명"); m1.metric("학업 중단자 수", f"{int(d['중단자수']):,}명")
             m2.metric("학업 중단율", f"{d['학업중단율']}%")
-            st.progress(min(d['학업중단율']/2.5, 1.0))
         else:
             total_info = df[(df['연도'] == sel_year) & (df['자치구'] == '소계')].iloc[0]
             st.success(f"**서울시 전체 평균**"); m1, m2 = st.columns(2)
